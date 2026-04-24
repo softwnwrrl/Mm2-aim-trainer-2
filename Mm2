@@ -1,40 +1,55 @@
--- ============================================
--- MM2 AIM TRAINER 2 - ULTIMATE (HYBRID)
--- Silent Aim (из источника) + AutoFarm (Walk/TP) + AutoStart
--- ============================================
-
--- ЗАГРУЗКА WINDUI
-local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
-
-if not WindUI then
-    game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Error", Text = "WindUI не загрузился", Duration = 5})
-    return
+-- ============ AUTOTP FARM (БОТ ПРЯМО В ЛИЦО) ============
+local function getRandomBot()
+    local bots = getBots()
+    if #bots == 0 then return nil end
+    return bots[math.random(1, #bots)]
 end
 
--- ============ ПЕРЕМЕННЫЕ ============
-local player = game.Players.LocalPlayer
-local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Camera = workspace.CurrentCamera
-
-local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
-local rootPart = character:WaitForChild("HumanoidRootPart")
-
--- Состояния (по умолчанию всё ВКЛ, кроме автошут)
-local silentAimEnabled = true
-local autoShoot = false
-local autoEquip = true
-local espEnabled = true
-local wallCheck = true
-local showBeam = true
-
-local autoFarmEnabled = false
-local farmMode = "Walk" -- Walk / TP
-local autoStartEnabled = false
-
-local currentTarget = nil
-local shootRemote = nil
+local function startTpFarmLoop()
+    if tpFarmConnection then coroutine.close(tpFarmConnection) end
+    tpFarmConnection = task.spawn(function()
+        while autoFarmEnabled and farmMode == "TP" do
+            if not isTpActive then
+                isTpActive = true
+                local targetBot = getRandomBot()
+                if targetBot and targetBot.model and rootPart then
+                    -- Сохраняем оригинальную позицию
+                    targetBot.originalCF = targetBot.rootPart.CFrame
+                    
+                    -- Телепортируем бота ПРЯМО В ЛИЦО (вплотную)
+                    -- Берем позицию головы игрока + направление взгляда * 2 (чтобы прямо перед носом)
+                    local head = character:FindFirstChild("Head")
+                    local facePos = head and head.Position or rootPart.Position
+                    local lookVector = head and head.CFrame.LookVector or rootPart.CFrame.LookVector
+                    
+                    -- Бот появляется прямо перед лицом (на расстоянии 2 студии)
+                    local teleportPos = facePos + lookVector * 2
+                    
+                    -- Телепортируем
+                    targetBot.rootPart.CFrame = CFrame.new(teleportPos)
+                    
+                    -- Ждём 0.5 секунды (можно стрелять)
+                    task.wait(tpVisibleTime)
+                    
+                    -- Возвращаем бота на место
+                    if targetBot.rootPart then
+                        targetBot.rootPart.CFrame = targetBot.originalCF
+                    end
+                    
+                    -- Автовыстрел (если включен)
+                    if autoShoot then
+                        local aimPos = getPredictedPosition(targetBot.model)
+                        if aimPos then 
+                            performShot(aimPos)
+                        end
+                    end
+                end
+                isTpActive = false
+            end
+            task.wait(tpCooldown)
+        end
+    end)
+endlocal shootRemote = nil
 
 -- Настройки упреждения (из источника)
 local predictDelay = 0.10
