@@ -1,83 +1,53 @@
--- ============ AUTOTP FARM (БОТ ПРЯМО В ЛИЦО) ============
-local function getRandomBot()
-    local bots = getBots()
-    if #bots == 0 then return nil end
-    return bots[math.random(1, #bots)]
+-- SILENT AIM + AUTOFARM (WALK/TP) + AUTOSTART
+
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+if not WindUI then
+    game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Error", Text = "WindUI failed to load", Duration = 5})
+    return
 end
 
-local function startTpFarmLoop()
-    if tpFarmConnection then coroutine.close(tpFarmConnection) end
-    tpFarmConnection = task.spawn(function()
-        while autoFarmEnabled and farmMode == "TP" do
-            if not isTpActive then
-                isTpActive = true
-                local targetBot = getRandomBot()
-                if targetBot and targetBot.model and rootPart then
-                    -- Сохраняем оригинальную позицию
-                    targetBot.originalCF = targetBot.rootPart.CFrame
-                    
-                    -- Телепортируем бота ПРЯМО В ЛИЦО (вплотную)
-                    -- Берем позицию головы игрока + направление взгляда * 2 (чтобы прямо перед носом)
-                    local head = character:FindFirstChild("Head")
-                    local facePos = head and head.Position or rootPart.Position
-                    local lookVector = head and head.CFrame.LookVector or rootPart.CFrame.LookVector
-                    
-                    -- Бот появляется прямо перед лицом (на расстоянии 2 студии)
-                    local teleportPos = facePos + lookVector * 2
-                    
-                    -- Телепортируем
-                    targetBot.rootPart.CFrame = CFrame.new(teleportPos)
-                    
-                    -- Ждём 0.5 секунды (можно стрелять)
-                    task.wait(tpVisibleTime)
-                    
-                    -- Возвращаем бота на место
-                    if targetBot.rootPart then
-                        targetBot.rootPart.CFrame = targetBot.originalCF
-                    end
-                    
-                    -- Автовыстрел (если включен)
-                    if autoShoot then
-                        local aimPos = getPredictedPosition(targetBot.model)
-                        if aimPos then 
-                            performShot(aimPos)
-                        end
-                    end
-                end
-                isTpActive = false
-            end
-            task.wait(tpCooldown)
-        end
-    end)
-endlocal shootRemote = nil
+local player = game.Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
--- Настройки упреждения (из источника)
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+local silentAimEnabled = true
+local autoShoot = false
+local autoEquip = true
+local espEnabled = true
+local wallCheck = true
+local showBeam = true
+local autoStartEnabled = false
+local autoFarmEnabled = false
+local farmMode = "Walk"
+
 local predictDelay = 0.10
 local velocityMult = 1.0
-local velocitySmooth = {}
 local smoothFactor = 0.3
+local velocitySmooth = {}
 
--- Настройки фарма
 local walkSpeed = 22
 local walkRange = 100
 local tpVisibleTime = 0.5
 local tpCooldown = 2
 
+local currentTarget = nil
+local shootRemote = nil
+local lastShootTime = 0
 local farmConnection = nil
 local tpFarmConnection = nil
 local isTpActive = false
-local lastShootTime = 0
 
--- ============ ФУНКЦИИ ИЗ ИСТОЧНИКА ============
-
--- Поиск remote для выстрела
 local function updateRemote()
     local potential = game:GetService("ReplicatedStorage"):FindFirstChild("ShootStart", true) 
                    or workspace:FindFirstChild("ShootStart", true)
     if potential then shootRemote = potential end
 end
 
--- Получение пистолета
 local function getGun()
     local backpack = player:FindFirstChild("Backpack")
     local char = character
@@ -90,7 +60,6 @@ local function getGun()
     return nil
 end
 
--- Луч (Beam) из источника
 local beam = Instance.new("Beam")
 beam.FaceCamera = true
 beam.Width0 = 0.2
@@ -121,7 +90,6 @@ local function updateBeam(predictedPos)
     end
 end
 
--- WallCheck (из источника)
 local function canSeeAdvanced(target)
     if not wallCheck then return true end
     if not target or not target:FindFirstChild("HumanoidRootPart") then return false end
@@ -146,7 +114,6 @@ local function canSeeAdvanced(target)
     return not result or result.Instance.Transparency > 0.7 or result.Instance.CanCollide == false
 end
 
--- Предсказание позиции (из источника)
 local function getPredictedPosition(target)
     local hrp = target:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
@@ -164,7 +131,6 @@ local function getPredictedPosition(target)
     return pos + smoothVel * t * velocityMult
 end
 
--- Выстрел (из источника)
 local function performShot(pos)
     local gun = getGun()
     if not gun then return end
@@ -183,7 +149,6 @@ local function performShot(pos)
     end
 end
 
--- ============ ПОЛУЧЕНИЕ БОТОВ ============
 local function getBots()
     local bots = {}
     local playerChar = character
@@ -209,51 +174,6 @@ local function getBots()
     return bots
 end
 
--- ============ АВТОСТАРТ ============
-local function autoStartRound()
-    local startButton = nil
-    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") then
-            startButton = gui:FindFirstChild("StartButton") or
-                          gui:FindFirstChild("PlayButton") or
-                          gui:FindFirstChild("RespawnButton") or
-                          gui:FindFirstChild("SkipButton")
-            if startButton and startButton:IsA("TextButton") then
-                break
-            end
-        end
-    end
-    if not startButton then
-        for _, gui in ipairs(game:GetService("CoreGui"):GetChildren()) do
-            startButton = gui:FindFirstChild("StartButton") or gui:FindFirstChild("PlayButton")
-            if startButton and startButton:IsA("TextButton") then
-                break
-            end
-        end
-    end
-    if startButton then
-        startButton:Click()
-        return true
-    end
-    local remote = game:GetService("ReplicatedStorage"):FindFirstChild("StartRound") or
-                   game:GetService("ReplicatedStorage"):FindFirstChild("StartGame")
-    if remote then
-        pcall(function() remote:FireServer() end)
-        return true
-    end
-    return false
-end
-
-task.spawn(function()
-    while true do
-        task.wait(5)
-        if autoStartEnabled then
-            autoStartRound()
-        end
-    end
-end)
-
--- ============ ESP (HIGHLIGHT ИЗ ИСТОЧНИКА) ============
 local highlight = Instance.new("Highlight")
 highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 
@@ -267,7 +187,6 @@ local function updateESP()
     highlight.FillColor = visible and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
 end
 
--- ============ ОСНОВНОЙ ЦИКЛ (ВЫБОР ЦЕЛИ) ============
 RunService.Heartbeat:Connect(function()
     if not silentAimEnabled then 
         highlight.Parent = nil
@@ -321,7 +240,41 @@ RunService.Heartbeat:Connect(function()
     updateESP()
 end)
 
--- Кнопка для выстрела (как в источнике)
+local function autoStartRound()
+    local startButton = nil
+    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            startButton = gui:FindFirstChild("StartButton") or
+                          gui:FindFirstChild("PlayButton") or
+                          gui:FindFirstChild("RespawnButton") or
+                          gui:FindFirstChild("SkipButton")
+            if startButton and startButton:IsA("TextButton") then
+                break
+            end
+        end
+    end
+    if startButton then
+        startButton:Click()
+        return true
+    end
+    local remote = game:GetService("ReplicatedStorage"):FindFirstChild("StartRound") or
+                   game:GetService("ReplicatedStorage"):FindFirstChild("StartGame")
+    if remote then
+        pcall(function() remote:FireServer() end)
+        return true
+    end
+    return false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if autoStartEnabled then
+            autoStartRound()
+        end
+    end
+end)
+
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "HitscanInput"
 ScreenGui.ResetOnSpawn = false
@@ -354,7 +307,6 @@ shootButton.MouseButton1Click:Connect(function()
     end
 end)
 
--- ============ AUTOWALK FARM ============
 local function getClosestBotForWalk()
     local bots = getBots()
     if #bots == 0 then return nil end
@@ -382,7 +334,7 @@ local function setNoclip(state)
     end
 end
 
-local function walkFarmCycle()
+local function walkFarmLoop()
     if not autoFarmEnabled or farmMode ~= "Walk" then return end
     if not character or not character.Parent then return end
     
@@ -405,31 +357,41 @@ local function walkFarmCycle()
     end
 end
 
--- ============ AUTOTP FARM ============
 local function getRandomBot()
     local bots = getBots()
     if #bots == 0 then return nil end
     return bots[math.random(1, #bots)]
 end
 
-local function startTpFarm()
+local function startTpFarmLoop()
     if tpFarmConnection then coroutine.close(tpFarmConnection) end
     tpFarmConnection = task.spawn(function()
         while autoFarmEnabled and farmMode == "TP" do
             if not isTpActive then
                 isTpActive = true
                 local targetBot = getRandomBot()
-                if targetBot and targetBot.model then
+                if targetBot and targetBot.model and rootPart then
                     targetBot.originalCF = targetBot.rootPart.CFrame
-                    local facePos = (rootPart.CFrame * CFrame.new(0, 0, -5)).Position
-                    targetBot.rootPart.CFrame = CFrame.new(facePos)
+                    
+                    local head = character:FindFirstChild("Head")
+                    local facePos = head and head.Position or rootPart.Position
+                    local lookVector = head and head.CFrame.LookVector or rootPart.CFrame.LookVector
+                    
+                    local teleportPos = facePos + lookVector * 2
+                    
+                    targetBot.rootPart.CFrame = CFrame.new(teleportPos)
+                    
                     task.wait(tpVisibleTime)
+                    
                     if targetBot.rootPart then
                         targetBot.rootPart.CFrame = targetBot.originalCF
                     end
+                    
                     if autoShoot then
                         local aimPos = getPredictedPosition(targetBot.model)
-                        if aimPos then performShot(aimPos) end
+                        if aimPos then 
+                            performShot(aimPos)
+                        end
                     end
                 end
                 isTpActive = false
@@ -439,15 +401,14 @@ local function startTpFarm()
     end)
 end
 
--- ============ ЗАПУСК ФАРМА ============
 local function startFarm()
     if farmConnection then farmConnection:Disconnect() end
     if tpFarmConnection then coroutine.close(tpFarmConnection) end
     
     if farmMode == "Walk" then
-        farmConnection = RunService.RenderStepped:Connect(walkFarmCycle)
+        farmConnection = RunService.RenderStepped:Connect(walkFarmLoop)
     else
-        startTpFarm()
+        startTpFarmLoop()
     end
 end
 
@@ -465,12 +426,11 @@ local function stopFarm()
     isTpActive = false
 end
 
--- ============ GUI (WINDUI) ============
 local Window = WindUI:CreateWindow({
-    Title = "🎯 MM2 AIM TRAINER 2",
-    Author = "HYBRID",
+    Title = "AIM TRAINER",
+    Author = "",
     Folder = "aimtrainer",
-    Size = UDim2.fromOffset(500, 550),
+    Size = UDim2.fromOffset(500, 600),
     Theme = "Dark"
 })
 
@@ -478,53 +438,127 @@ local CombatTab = Window:Tab({Title = "Combat"})
 local FarmTab = Window:Tab({Title = "Farm"})
 local SettingsTab = Window:Tab({Title = "Settings"})
 
--- Combat Tab
 CombatTab:Toggle({
-    Title = "🎯 Silent Aim",
-    Description = "Пуля сама летит в бота (хитскан + упреждение)",
+    Title = "Silent Aim",
+    Description = "Bullet flies to target automatically",
     Default = silentAimEnabled,
     Callback = function(v) silentAimEnabled = v end
 })
 
 CombatTab:Toggle({
-    Title = "🔫 Auto Shoot",
-    Description = "Автоматический выстрел при наведении",
+    Title = "Auto Shoot",
+    Description = "Automatic shot when aiming",
     Default = autoShoot,
     Callback = function(v) autoShoot = v end
 })
 
 CombatTab:Toggle({
-    Title = "⚡ Auto Equip",
-    Description = "Автоматически достаёт пистолет перед выстрелом",
+    Title = "Auto Equip",
+    Description = "Auto equip gun before shooting",
     Default = autoEquip,
     Callback = function(v) autoEquip = v end
 })
 
 CombatTab:Toggle({
-    Title = "👁️ ESP (Highlight)",
-    Description = "Подсветка ботов (зелёный/красный)",
+    Title = "ESP (Highlight)",
+    Description = "Highlight bots (green/red)",
     Default = espEnabled,
     Callback = function(v) espEnabled = v end
 })
 
 CombatTab:Toggle({
-    Title = "🧱 Wall Check",
-    Description = "Проверка видимости через стены",
+    Title = "Wall Check",
+    Description = "Check visibility through walls",
     Default = wallCheck,
     Callback = function(v) wallCheck = v end
 })
 
 CombatTab:Toggle({
-    Title = "✨ Show Beam",
-    Description = "Показывать красный луч от оружия",
+    Title = "Show Beam",
+    Description = "Show red beam from weapon",
     Default = showBeam,
     Callback = function(v) showBeam = v end
 })
 
--- Farm Tab
+local walkToggleBtn = nil
+local tpToggleBtn = nil
+
+local function updateToggleButton(btn, state)
+    if not btn then return end
+    btn.Text = btn.Title .. ": " .. (state and "ON" or "OFF")
+    btn.BackgroundColor3 = state and Color3.fromRGB(0, 150, 0) or Color3.fromRGB(60, 60, 70)
+end
+
 FarmTab:Toggle({
-    Title = "🚀 Auto Farm",
-    Description = "Включить автоматический фарм",
+    Title = "Walk Mode",
+    Description = "Fly to bot (Noclip + speed)",
+    Default = (farmMode == "Walk"),
+    Callback = function(v)
+        if v then
+            farmMode = "Walk"
+            if tpToggleBtn then
+                tpToggleBtn.Value = false
+                updateToggleButton(tpToggleBtn, false)
+                if tpToggleBtn._callback then tpToggleBtn._callback(false) end
+            end
+            if autoFarmEnabled then
+                stopFarm()
+                startFarm()
+            end
+            WindUI:Notify({Title = "Farm Mode", Content = "Mode: Walk", Duration = 2})
+        else
+            if not tpToggleBtn or not tpToggleBtn.Value then
+                if autoFarmEnabled then
+                    autoFarmEnabled = false
+                    stopFarm()
+                end
+            end
+        end
+    end
+})
+
+FarmTab:Toggle({
+    Title = "TP Mode",
+    Description = "Teleport bot directly to your face",
+    Default = (farmMode == "TP"),
+    Callback = function(v)
+        if v then
+            farmMode = "TP"
+            if walkToggleBtn then
+                walkToggleBtn.Value = false
+                updateToggleButton(walkToggleBtn, false)
+                if walkToggleBtn._callback then walkToggleBtn._callback(false) end
+            end
+            if autoFarmEnabled then
+                stopFarm()
+                startFarm()
+            end
+            WindUI:Notify({Title = "Farm Mode", Content = "Mode: TP", Duration = 2})
+        else
+            if not walkToggleBtn or not walkToggleBtn.Value then
+                if autoFarmEnabled then
+                    autoFarmEnabled = false
+                    stopFarm()
+                end
+            end
+        end
+    end
+})
+
+task.wait(0.1)
+for _, btn in pairs(FarmTab._buttons or {}) do
+    if btn.Title == "Walk Mode" then
+        walkToggleBtn = btn
+        walkToggleBtn.Value = (farmMode == "Walk")
+    elseif btn.Title == "TP Mode" then
+        tpToggleBtn = btn
+        tpToggleBtn.Value = (farmMode == "TP")
+    end
+end
+
+FarmTab:Toggle({
+    Title = "Auto Farm",
+    Description = "Enable automatic farming",
     Default = false,
     Callback = function(v)
         autoFarmEnabled = v
@@ -536,75 +570,63 @@ FarmTab:Toggle({
     end
 })
 
-FarmTab:Dropdown({
-    Title = "Farm Mode",
-    Description = "Walk = летишь к боту | TP = бот телепортируется к тебе",
-    Options = {"Walk", "TP"},
-    Default = "Walk",
-    Callback = function(v) 
-        farmMode = v
-        if autoFarmEnabled then
-            stopFarm()
-            startFarm()
-        end
-    end
-})
-
 FarmTab:Slider({
-    Title = "🚶 Walk Speed",
-    Value = {Min = 18, Max = 35, Default = 22}, Step = 1,
+    Title = "Walk Speed",
+    Description = "Movement speed (18-35)",
+    Value = {Min = 18, Max = 35, Default = walkSpeed}, Step = 1,
     Callback = function(v) walkSpeed = v end
 })
 
 FarmTab:Slider({
-    Title = "📏 Walk Range",
-    Value = {Min = 50, Max = 200, Default = 100}, Step = 10,
+    Title = "Walk Range",
+    Description = "Bot search distance (50-200)",
+    Value = {Min = 50, Max = 200, Default = walkRange}, Step = 10,
     Callback = function(v) walkRange = v end
 })
 
 FarmTab:Slider({
-    Title = "⏱️ TP Visible Time (сек)",
-    Value = {Min = 0.2, Max = 1.5, Default = 0.5}, Step = 0.1,
+    Title = "TP Visible Time",
+    Description = "Seconds bot stays visible in front of you",
+    Value = {Min = 0.2, Max = 1.5, Default = tpVisibleTime}, Step = 0.1,
     Callback = function(v) tpVisibleTime = v end
 })
 
 FarmTab:Slider({
-    Title = "⏲️ TP Cooldown (сек)",
-    Value = {Min = 1, Max = 5, Default = 2}, Step = 0.5,
+    Title = "TP Cooldown",
+    Description = "Delay between TP (seconds)",
+    Value = {Min = 1, Max = 5, Default = tpCooldown}, Step = 0.5,
     Callback = function(v) tpCooldown = v end
 })
 
--- Settings Tab
 SettingsTab:Toggle({
-    Title = "🔄 Auto Start Round",
-    Description = "Автоматический старт/респавн каждые 5 сек",
+    Title = "Auto Start Round",
+    Description = "Auto start/respawn every 5 seconds",
     Default = false,
     Callback = function(v) autoStartEnabled = v end
 })
 
 SettingsTab:Slider({
-    Title = "📡 Prediction Delay",
-    Description = "Задержка упреждения (0.05-0.20)",
+    Title = "Prediction Delay",
+    Description = "Prediction delay",
     Value = {Min = 0.05, Max = 0.20, Default = 0.10}, Step = 0.005,
     Callback = function(v) predictDelay = v end
 })
 
 SettingsTab:Slider({
-    Title = "⚡ Velocity Multiplier",
-    Description = "Множитель скорости цели (0.8-1.5)",
+    Title = "Velocity Multiplier",
+    Description = "Target velocity multiplier",
     Value = {Min = 0.8, Max = 1.5, Default = 1.0}, Step = 0.05,
     Callback = function(v) velocityMult = v end
 })
 
 SettingsTab:Button({
-    Title = "📊 Bot Stats",
+    Title = "Bot Stats",
     Callback = function()
         local bots = #getBots()
-        WindUI:Notify({Title = "Stats", Content = "Ботов на карте: " .. bots, Duration = 3})
+        WindUI:Notify({Title = "Stats", Content = "Bots on map: " .. bots, Duration = 3})
     end
 })
 
--- Обновление при респавне
 player.CharacterAdded:Connect(function(newChar)
     character = newChar
     humanoid = newChar:WaitForChild("Humanoid")
@@ -616,17 +638,13 @@ player.CharacterAdded:Connect(function(newChar)
     end
 end)
 
--- Запуск
 task.wait(1)
 updateRemote()
 
 WindUI:Notify({
-    Title = "✅ AIM TRAINER 2 ULTIMATE",
-    Content = "Silent Aim (хитскан) + AutoFarm Walk/TP + AutoStart",
+    Title = "Ready",
+    Content = "Silent Aim + AutoFarm (Walk/TP) + AutoStart",
     Duration = 5
 })
 
-print("✅ AIM TRAINER 2 HYBRID LOADED")
-print("   Silent Aim - из источника (рабочий)")
-print("   Auto Farm - Walk / TP режимы")
-print("   Auto Start - автоматический старт")
+print("Script loaded successfully")
