@@ -1,0 +1,617 @@
+-- ============================================
+-- MM2 AIM TRAINER 2 - ULTIMATE (HYBRID)
+-- Silent Aim (из источника) + AutoFarm (Walk/TP) + AutoStart
+-- ============================================
+
+-- ЗАГРУЗКА WINDUI
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+if not WindUI then
+    game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Error", Text = "WindUI не загрузился", Duration = 5})
+    return
+end
+
+-- ============ ПЕРЕМЕННЫЕ ============
+local player = game.Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Состояния (по умолчанию всё ВКЛ, кроме автошут)
+local silentAimEnabled = true
+local autoShoot = false
+local autoEquip = true
+local espEnabled = true
+local wallCheck = true
+local showBeam = true
+
+local autoFarmEnabled = false
+local farmMode = "Walk" -- Walk / TP
+local autoStartEnabled = false
+
+local currentTarget = nil
+local shootRemote = nil
+
+-- Настройки упреждения (из источника)
+local predictDelay = 0.10
+local velocityMult = 1.0
+local velocitySmooth = {}
+local smoothFactor = 0.3
+
+-- Настройки фарма
+local walkSpeed = 22
+local walkRange = 100
+local tpVisibleTime = 0.5
+local tpCooldown = 2
+
+local farmConnection = nil
+local tpFarmConnection = nil
+local isTpActive = false
+local lastShootTime = 0
+
+-- ============ ФУНКЦИИ ИЗ ИСТОЧНИКА ============
+
+-- Поиск remote для выстрела
+local function updateRemote()
+    local potential = game:GetService("ReplicatedStorage"):FindFirstChild("ShootStart", true) 
+                   or workspace:FindFirstChild("ShootStart", true)
+    if potential then shootRemote = potential end
+end
+
+-- Получение пистолета
+local function getGun()
+    local backpack = player:FindFirstChild("Backpack")
+    local char = character
+    if not backpack or not char then return nil end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool and (tool.Name:lower():find("gun") or tool:FindFirstChild("GunServer")) then return tool end
+    for _, v in pairs(backpack:GetChildren()) do
+        if v:IsA("Tool") and (v.Name:lower():find("gun") or v:FindFirstChild("GunServer")) then return v end
+    end
+    return nil
+end
+
+-- Луч (Beam) из источника
+local beam = Instance.new("Beam")
+beam.FaceCamera = true
+beam.Width0 = 0.2
+beam.Width1 = 0.2
+beam.Color = ColorSequence.new(Color3.fromRGB(255, 0, 0))
+beam.Transparency = NumberSequence.new(0.5)
+beam.Enabled = false
+beam.Parent = workspace.Terrain
+
+local attach0 = Instance.new("Attachment")
+local attach1 = Instance.new("Attachment")
+beam.Attachment0 = attach0
+beam.Attachment1 = attach1
+
+local function updateBeam(predictedPos)
+    local char = character
+    local gun = getGun()
+    local rightArm = char and (char:FindFirstChild("Right Arm") or char:FindFirstChild("RightHand"))
+
+    if showBeam and silentAimEnabled and gun and predictedPos and rightArm then
+        attach0.Parent = rightArm
+        attach0.Position = Vector3.new(1.2, 0.5, 0)
+        attach1.Parent = workspace.Terrain
+        attach1.WorldPosition = predictedPos
+        beam.Enabled = true
+    else
+        beam.Enabled = false
+    end
+end
+
+-- WallCheck (из источника)
+local function canSeeAdvanced(target)
+    if not wallCheck then return true end
+    if not target or not target:FindFirstChild("HumanoidRootPart") then return false end
+    local char = character
+    if not char:FindFirstChild("Head") then return false end
+
+    local origin = char.Head.Position
+    local destination = target.HumanoidRootPart.Position
+    local direction = destination - origin
+
+    local params = RaycastParams.new()
+    local ignoreList = {char, target}
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= target and obj:FindFirstChild("Humanoid") then
+            table.insert(ignoreList, obj)
+        end
+    end
+    params.FilterDescendantsInstances = ignoreList
+    params.FilterType = Enum.RaycastFilterType.Exclude
+
+    local result = workspace:Raycast(origin, direction, params)
+    return not result or result.Instance.Transparency > 0.7 or result.Instance.CanCollide == false
+end
+
+-- Предсказание позиции (из источника)
+local function getPredictedPosition(target)
+    local hrp = target:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local pos = hrp.Position
+    local rawVel = hrp.Velocity
+
+    if not velocitySmooth[target] then velocitySmooth[target] = rawVel end
+    local smoothVel = velocitySmooth[target]:Lerp(rawVel, smoothFactor)
+    velocitySmooth[target] = smoothVel
+
+    local ping = settings().Network.IncomingReplicationLag
+    local t = ping + predictDelay
+
+    return pos + smoothVel * t * velocityMult
+end
+
+-- Выстрел (из источника)
+local function performShot(pos)
+    local gun = getGun()
+    if not gun then return end
+    local char = character
+
+    if autoEquip and gun.Parent == player.Backpack then
+        humanoid:EquipTool(gun)
+        task.wait(0.01)
+        updateRemote()
+        if shootRemote then shootRemote:FireServer(pos) end
+        task.wait(0.04)
+        humanoid:UnequipTools()
+    else
+        updateRemote()
+        if shootRemote then shootRemote:FireServer(pos) end
+    end
+end
+
+-- ============ ПОЛУЧЕНИЕ БОТОВ ============
+local function getBots()
+    local bots = {}
+    local playerChar = character
+    if not playerChar then return bots end
+    
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj ~= playerChar then
+            local hum = obj:FindFirstChildWhichIsA("Humanoid")
+            if hum and hum.Health > 0 then
+                local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso")
+                if root then
+                    table.insert(bots, {
+                        model = obj,
+                        humanoid = hum,
+                        rootPart = root,
+                        head = obj:FindFirstChild("Head"),
+                        originalCF = root.CFrame
+                    })
+                end
+            end
+        end
+    end
+    return bots
+end
+
+-- ============ АВТОСТАРТ ============
+local function autoStartRound()
+    local startButton = nil
+    for _, gui in ipairs(player.PlayerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            startButton = gui:FindFirstChild("StartButton") or
+                          gui:FindFirstChild("PlayButton") or
+                          gui:FindFirstChild("RespawnButton") or
+                          gui:FindFirstChild("SkipButton")
+            if startButton and startButton:IsA("TextButton") then
+                break
+            end
+        end
+    end
+    if not startButton then
+        for _, gui in ipairs(game:GetService("CoreGui"):GetChildren()) do
+            startButton = gui:FindFirstChild("StartButton") or gui:FindFirstChild("PlayButton")
+            if startButton and startButton:IsA("TextButton") then
+                break
+            end
+        end
+    end
+    if startButton then
+        startButton:Click()
+        return true
+    end
+    local remote = game:GetService("ReplicatedStorage"):FindFirstChild("StartRound") or
+                   game:GetService("ReplicatedStorage"):FindFirstChild("StartGame")
+    if remote then
+        pcall(function() remote:FireServer() end)
+        return true
+    end
+    return false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(5)
+        if autoStartEnabled then
+            autoStartRound()
+        end
+    end
+end)
+
+-- ============ ESP (HIGHLIGHT ИЗ ИСТОЧНИКА) ============
+local highlight = Instance.new("Highlight")
+highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+
+local function updateESP()
+    if not espEnabled or not currentTarget then
+        highlight.Parent = nil
+        return
+    end
+    local visible = canSeeAdvanced(currentTarget)
+    highlight.Parent = currentTarget
+    highlight.FillColor = visible and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 0, 0)
+end
+
+-- ============ ОСНОВНОЙ ЦИКЛ (ВЫБОР ЦЕЛИ) ============
+RunService.Heartbeat:Connect(function()
+    if not silentAimEnabled then 
+        highlight.Parent = nil
+        beam.Enabled = false
+        return 
+    end
+    
+    local closest, minDist = nil, 2000
+    local myRoot = rootPart
+    if not myRoot then return end
+
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Humanoid") then
+            local char = obj.Parent
+            if char and char ~= character then
+                local hum = obj
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hum.Health > 0 and hrp then
+                    local dist = (myRoot.Position - hrp.Position).Magnitude
+                    if dist < minDist then
+                        minDist = dist
+                        closest = char
+                    end
+                end
+            end
+        end
+    end
+
+    currentTarget = closest
+
+    for target, _ in pairs(velocitySmooth) do
+        if target ~= currentTarget then
+            velocitySmooth[target] = nil
+        end
+    end
+
+    if currentTarget then
+        local aimPos = getPredictedPosition(currentTarget)
+        if aimPos then
+            updateBeam(aimPos)
+            
+            if autoShoot and canSeeAdvanced(currentTarget) and tick() - lastShootTime > 0.73 then
+                performShot(aimPos)
+                lastShootTime = tick()
+            end
+        end
+    else
+        beam.Enabled = false
+    end
+    
+    updateESP()
+end)
+
+-- Кнопка для выстрела (как в источнике)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HitscanInput"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = player:WaitForChild("PlayerGui")
+
+local shootButton = Instance.new("TextButton")
+shootButton.Size = UDim2.new(0, 65, 0, 65)
+shootButton.Position = UDim2.new(0.85, 0, 0.5, 0)
+shootButton.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+shootButton.BackgroundTransparency = 0.8
+shootButton.Text = ""
+shootButton.Draggable = true
+shootButton.Parent = ScreenGui
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(1, 0)
+btnCorner.Parent = shootButton
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Thickness = 3
+btnStroke.Color = Color3.fromRGB(255, 0, 0)
+btnStroke.Parent = shootButton
+
+shootButton.MouseButton1Click:Connect(function()
+    if currentTarget then
+        local aimPos = getPredictedPosition(currentTarget)
+        if aimPos and canSeeAdvanced(currentTarget) then
+            performShot(aimPos)
+        end
+    end
+end)
+
+-- ============ AUTOWALK FARM ============
+local function getClosestBotForWalk()
+    local bots = getBots()
+    if #bots == 0 then return nil end
+    local playerPos = rootPart and rootPart.Position or Vector3.zero
+    local closest = nil
+    local closestDist = math.huge
+    for _, bot in ipairs(bots) do
+        local botPos = bot.rootPart and bot.rootPart.Position
+        if botPos then
+            local dist = (playerPos - botPos).Magnitude
+            if dist < closestDist and dist <= walkRange then
+                closestDist = dist
+                closest = bot.model
+            end
+        end
+    end
+    return closest
+end
+
+local function setNoclip(state)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = not state
+        end
+    end
+end
+
+local function walkFarmCycle()
+    if not autoFarmEnabled or farmMode ~= "Walk" then return end
+    if not character or not character.Parent then return end
+    
+    local closest = getClosestBotForWalk()
+    if closest and closest:FindFirstChild("HumanoidRootPart") then
+        local targetPos = closest.HumanoidRootPart.Position
+        local dist = (rootPart.Position - targetPos).Magnitude
+        
+        humanoid:MoveTo(targetPos)
+        humanoid.WalkSpeed = walkSpeed
+        setNoclip(true)
+        
+        if dist < 15 and autoShoot then
+            local aimPos = getPredictedPosition(closest)
+            if aimPos then performShot(aimPos) end
+        end
+    else
+        humanoid.WalkSpeed = 16
+        setNoclip(false)
+    end
+end
+
+-- ============ AUTOTP FARM ============
+local function getRandomBot()
+    local bots = getBots()
+    if #bots == 0 then return nil end
+    return bots[math.random(1, #bots)]
+end
+
+local function startTpFarm()
+    if tpFarmConnection then coroutine.close(tpFarmConnection) end
+    tpFarmConnection = task.spawn(function()
+        while autoFarmEnabled and farmMode == "TP" do
+            if not isTpActive then
+                isTpActive = true
+                local targetBot = getRandomBot()
+                if targetBot and targetBot.model then
+                    targetBot.originalCF = targetBot.rootPart.CFrame
+                    local facePos = (rootPart.CFrame * CFrame.new(0, 0, -5)).Position
+                    targetBot.rootPart.CFrame = CFrame.new(facePos)
+                    task.wait(tpVisibleTime)
+                    if targetBot.rootPart then
+                        targetBot.rootPart.CFrame = targetBot.originalCF
+                    end
+                    if autoShoot then
+                        local aimPos = getPredictedPosition(targetBot.model)
+                        if aimPos then performShot(aimPos) end
+                    end
+                end
+                isTpActive = false
+            end
+            task.wait(tpCooldown)
+        end
+    end)
+end
+
+-- ============ ЗАПУСК ФАРМА ============
+local function startFarm()
+    if farmConnection then farmConnection:Disconnect() end
+    if tpFarmConnection then coroutine.close(tpFarmConnection) end
+    
+    if farmMode == "Walk" then
+        farmConnection = RunService.RenderStepped:Connect(walkFarmCycle)
+    else
+        startTpFarm()
+    end
+end
+
+local function stopFarm()
+    if farmConnection then
+        farmConnection:Disconnect()
+        farmConnection = nil
+    end
+    if tpFarmConnection then
+        coroutine.close(tpFarmConnection)
+        tpFarmConnection = nil
+    end
+    humanoid.WalkSpeed = 16
+    setNoclip(false)
+    isTpActive = false
+end
+
+-- ============ GUI (WINDUI) ============
+local Window = WindUI:CreateWindow({
+    Title = "🎯 MM2 AIM TRAINER 2",
+    Author = "HYBRID",
+    Folder = "aimtrainer",
+    Size = UDim2.fromOffset(500, 550),
+    Theme = "Dark"
+})
+
+local CombatTab = Window:Tab({Title = "Combat"})
+local FarmTab = Window:Tab({Title = "Farm"})
+local SettingsTab = Window:Tab({Title = "Settings"})
+
+-- Combat Tab
+CombatTab:Toggle({
+    Title = "🎯 Silent Aim",
+    Description = "Пуля сама летит в бота (хитскан + упреждение)",
+    Default = silentAimEnabled,
+    Callback = function(v) silentAimEnabled = v end
+})
+
+CombatTab:Toggle({
+    Title = "🔫 Auto Shoot",
+    Description = "Автоматический выстрел при наведении",
+    Default = autoShoot,
+    Callback = function(v) autoShoot = v end
+})
+
+CombatTab:Toggle({
+    Title = "⚡ Auto Equip",
+    Description = "Автоматически достаёт пистолет перед выстрелом",
+    Default = autoEquip,
+    Callback = function(v) autoEquip = v end
+})
+
+CombatTab:Toggle({
+    Title = "👁️ ESP (Highlight)",
+    Description = "Подсветка ботов (зелёный/красный)",
+    Default = espEnabled,
+    Callback = function(v) espEnabled = v end
+})
+
+CombatTab:Toggle({
+    Title = "🧱 Wall Check",
+    Description = "Проверка видимости через стены",
+    Default = wallCheck,
+    Callback = function(v) wallCheck = v end
+})
+
+CombatTab:Toggle({
+    Title = "✨ Show Beam",
+    Description = "Показывать красный луч от оружия",
+    Default = showBeam,
+    Callback = function(v) showBeam = v end
+})
+
+-- Farm Tab
+FarmTab:Toggle({
+    Title = "🚀 Auto Farm",
+    Description = "Включить автоматический фарм",
+    Default = false,
+    Callback = function(v)
+        autoFarmEnabled = v
+        if v then
+            startFarm()
+        else
+            stopFarm()
+        end
+    end
+})
+
+FarmTab:Dropdown({
+    Title = "Farm Mode",
+    Description = "Walk = летишь к боту | TP = бот телепортируется к тебе",
+    Options = {"Walk", "TP"},
+    Default = "Walk",
+    Callback = function(v) 
+        farmMode = v
+        if autoFarmEnabled then
+            stopFarm()
+            startFarm()
+        end
+    end
+})
+
+FarmTab:Slider({
+    Title = "🚶 Walk Speed",
+    Value = {Min = 18, Max = 35, Default = 22}, Step = 1,
+    Callback = function(v) walkSpeed = v end
+})
+
+FarmTab:Slider({
+    Title = "📏 Walk Range",
+    Value = {Min = 50, Max = 200, Default = 100}, Step = 10,
+    Callback = function(v) walkRange = v end
+})
+
+FarmTab:Slider({
+    Title = "⏱️ TP Visible Time (сек)",
+    Value = {Min = 0.2, Max = 1.5, Default = 0.5}, Step = 0.1,
+    Callback = function(v) tpVisibleTime = v end
+})
+
+FarmTab:Slider({
+    Title = "⏲️ TP Cooldown (сек)",
+    Value = {Min = 1, Max = 5, Default = 2}, Step = 0.5,
+    Callback = function(v) tpCooldown = v end
+})
+
+-- Settings Tab
+SettingsTab:Toggle({
+    Title = "🔄 Auto Start Round",
+    Description = "Автоматический старт/респавн каждые 5 сек",
+    Default = false,
+    Callback = function(v) autoStartEnabled = v end
+})
+
+SettingsTab:Slider({
+    Title = "📡 Prediction Delay",
+    Description = "Задержка упреждения (0.05-0.20)",
+    Value = {Min = 0.05, Max = 0.20, Default = 0.10}, Step = 0.005,
+    Callback = function(v) predictDelay = v end
+})
+
+SettingsTab:Slider({
+    Title = "⚡ Velocity Multiplier",
+    Description = "Множитель скорости цели (0.8-1.5)",
+    Value = {Min = 0.8, Max = 1.5, Default = 1.0}, Step = 0.05,
+    Callback = function(v) velocityMult = v end
+})
+
+SettingsTab:Button({
+    Title = "📊 Bot Stats",
+    Callback = function()
+        local bots = #getBots()
+        WindUI:Notify({Title = "Stats", Content = "Ботов на карте: " .. bots, Duration = 3})
+    end
+})
+
+-- Обновление при респавне
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    rootPart = newChar:WaitForChild("HumanoidRootPart")
+    task.wait(0.5)
+    if autoFarmEnabled then
+        stopFarm()
+        startFarm()
+    end
+end)
+
+-- Запуск
+task.wait(1)
+updateRemote()
+
+WindUI:Notify({
+    Title = "✅ AIM TRAINER 2 ULTIMATE",
+    Content = "Silent Aim (хитскан) + AutoFarm Walk/TP + AutoStart",
+    Duration = 5
+})
+
+print("✅ AIM TRAINER 2 HYBRID LOADED")
+print("   Silent Aim - из источника (рабочий)")
+print("   Auto Farm - Walk / TP режимы")
+print("   Auto Start - автоматический старт")
